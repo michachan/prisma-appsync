@@ -229,10 +229,28 @@ enum NullArg {
                         {% if field.isList -%}[{{ field.scalar }}]{% else %}{{ field.scalar }}{% endif %}{% if field.isRequired and not field.isAutopopulated -%}!{% endif %}
                 {% elseif field.isEditable and field.relation -%}
                     {{ field.name }}: 
-                        {{ field.relation.name }}CreateRelationInput{% if field.isRequired and not field.isAutopopulated -%}!{% endif %}
+                        {{ field.relation.name }}CreateNestedWithout{{ field.name | pascalCase }}Input{% if field.isRequired and not field.isAutopopulated -%}!{% endif %}
                 {% endif -%}
             {% endfor %}
         }
+
+        {% for relationField in model.fields -%}
+            {% if relationField.relation -%}
+                input {{ model.name }}CreateWithout{{ relationField.scalar | pascalCase }}Input {
+                    {% for field in model.fields -%}
+                        {% if field.name !== relationField.name -%}
+                            {% if field.isEditable and not field.relation -%}
+                                {{ field.name }}: 
+                                    {% if field.isList -%}[{{ field.scalar }}]{% else %}{{ field.scalar }}{% endif %}{% if field.isRequired and not field.isAutopopulated -%}!{% endif %}
+                            {% elseif field.isEditable and field.relation -%}
+                                {{ field.name }}: 
+                                    {{ field.relation.name }}CreateNestedWithout{{ field.name | pascalCase }}Input{% if field.isRequired and not field.isAutopopulated -%}!{% endif %}
+                            {% endif -%}
+                        {% endif -%}
+                    {% endfor %}
+                }
+            {% endif -%}
+        {% endfor -%}
 
         input {{ model.name }}CreateManyInput {
             {% for field in model.fields -%}
@@ -248,7 +266,7 @@ enum NullArg {
                 {% if field.isEditable and not field.relation -%}
                     {{ field.name }}: {% if field.isList -%}[{{ field.scalar }}]{% else %}{{ field.scalar }}{% endif %}
                 {% elseif field.isEditable and field.relation -%}
-                    {{ field.name }}: {{ field.relation.name }}UpdateRelationsInput
+                    {{ field.name }}: {{ field.relation.name }}UpdateNestedInput
                 {% endif -%}
             {% endfor %}
         }
@@ -298,19 +316,19 @@ enum NullArg {
 
     {% for field in model.fields -%}
         {% if field.relation -%}
-            input {{ field.relation.name }}CreateRelationInput {
+            input {{ field.relation.name }}CreateNestedWithout{{ field.name | pascalCase }}Input {
                 {% if field.relation.kind === "one" -%}
-                create: {{ field.relation.type }}CreateInput
+                create: {{ field.relation.type }}CreateWithout{{ model.name }}Input
                 connect: {{ field.relation.type }}WhereUniqueInput
                 connectOrCreate: {{ field.relation.type }}ConnectOrCreateInput
                 {% else  -%}
-                create: [{{ field.relation.type }}CreateInput]
+                create: [{{ field.relation.type }}CreateWithout{{ model.name }}Input]
                 connect: [{{ field.relation.type }}WhereUniqueInput]
                 connectOrCreate: [{{ field.relation.type }}ConnectOrCreateInput]
                 {% endif -%}
             }
 
-            input {{ field.relation.name }}UpdateRelationsInput {
+            input {{ field.relation.name }}UpdateNestedInput {
                 {% if field.relation.kind === "one" -%}
                 connect: {{ field.relation.type }}WhereUniqueInput
                 create: {{ field.relation.type }}CreateInput
