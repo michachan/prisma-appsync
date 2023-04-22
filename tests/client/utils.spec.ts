@@ -11,9 +11,10 @@ import {
     isUndefined,
     lowerFirst,
     merge,
+    objectToPaths,
     omit,
-    replaceObjectPath,
-    traverse,
+    traverseNodes,
+    unique,
     upperFirst,
 } from '@client/utils'
 
@@ -137,6 +138,35 @@ describe('CLIENT #utils', () => {
             expect(result).toEqual({ 'data.tags': ['foo', 'bar'] })
         })
     })
+    describe('.objectToPaths?', () => {
+        test('expect objectToPaths to transform an object to to an array of paths.', () => {
+            const result = objectToPaths({ data: { title: 'foo', comment: { user: { id: 2 } } } })
+            expect(result).toEqual([
+                'data',
+                'data/title',
+                'data/comment',
+                'data/comment/user',
+                'data/comment/user/id',
+            ])
+        })
+        test('expect objectToPaths to transform an object to to an array of paths (incl. sub-arrays).', () => {
+            const result = objectToPaths({
+                data: [{
+                    title: 'foo from array',
+                    comment: {
+                        user: { id: 2 },
+                    },
+                }],
+            })
+            expect(result).toEqual([
+                'data',
+                'data/title',
+                'data/comment',
+                'data/comment/user',
+                'data/comment/user/id',
+            ])
+        })
+    })
     describe('.isMatchingGlob?', () => {
         test('expect isMatchingGlob to return true if specified path matches any of the glob patterns', () => {
             const result = isMatchingGlob('get/post/title', ['get/post{,/**}'])
@@ -210,8 +240,8 @@ describe('CLIENT #utils', () => {
         })
     })
     describe('.traverse?', () => {
-        test('expect traverse to allow traverse an modify an Object', () => {
-            const result = traverse(
+        test('expect traverse to allow traverse an modify an Object', async () => {
+            const result = await traverseNodes(
                 {
                     select: {
                         title: true,
@@ -222,10 +252,9 @@ describe('CLIENT #utils', () => {
                         ],
                     },
                 },
-                ({ value }) => {
-                    if (typeof value === 'boolean')
-                        value = !value
-                    return { value }
+                async (node) => {
+                    if (typeof node?.value === 'boolean')
+                        node.set(!node.value)
                 },
             )
             expect(result).toEqual({
@@ -239,8 +268,8 @@ describe('CLIENT #utils', () => {
                 },
             })
         })
-        test('expect traverse to allow exclude keys in Object', () => {
-            const result = traverse(
+        test('expect traverse to allow exclude keys in Object', async () => {
+            const result = await traverseNodes(
                 {
                     select: {
                         title: true,
@@ -251,13 +280,11 @@ describe('CLIENT #utils', () => {
                         ],
                     },
                 },
-                ({ value, key }) => {
-                    let excludeChilds = false
-                    if (typeof key === 'string' && key === 'authors')
-                        excludeChilds = true
-                    if (typeof value === 'boolean')
-                        value = !value
-                    return { value, excludeChilds }
+                async (node) => {
+                    if (typeof node?.key === 'string' && node?.key === 'authors')
+                        node.break()
+                    if (typeof node?.value === 'boolean')
+                        node.set(!node.value)
                 },
             )
             expect(result).toEqual({
@@ -271,30 +298,30 @@ describe('CLIENT #utils', () => {
                 },
             })
         })
-        test('expect traverse to allow traverse an modify an Array', () => {
-            const result = traverse([{ authors: { username: true } }, { comments: { username: true } }], ({ value }) => {
-                if (typeof value === 'boolean')
-                    value = !value
-                return { value }
+        test('expect traverse to allow traverse an modify an Array', async () => {
+            const result = await traverseNodes([{ authors: { username: true } }, { comments: { username: true } }], async (node) => {
+                if (typeof node?.value === 'boolean')
+                    node.set(!node.value)
             })
             expect(result).toEqual([{ authors: { username: false } }, { comments: { username: false } }])
         })
-        test('expect traverse to allow excluding elements in Array', () => {
-            const result = traverse(
+        test('expect traverse to allow excluding elements in Array', async () => {
+            const result = await traverseNodes(
                 [{ authors: { username: true } }, { comments: { username: true } }],
-                ({ value, key }) => {
-                    const excludeChilds = !!(typeof key === 'string' && key === 'comments')
-                    if (typeof value === 'boolean')
-                        value = !value
-                    return { value, excludeChilds }
+                async (node) => {
+                    if (typeof node?.value === 'boolean')
+                        node.set(!node.value)
+
+                    if (typeof node?.key === 'string' && node?.key === 'comments')
+                        node.break()
                 },
             )
             expect(result).toEqual([{ authors: { username: false } }, { comments: { username: true } }])
         })
-        test('expect replaceObjectPath to allow replace and mutate based on path and replacer', () => {
-            const obj = { where: { author: { is: 'NULL' } } }
-            replaceObjectPath(obj, ['where', 'author', 'is'], null)
-            expect(obj).toEqual({ where: { author: { is: null } } })
+    })
+    describe('.unique?', () => {
+        test('expect unique to return a unique array', () => {
+            expect(unique(['a', 'b', 'a'])).toEqual(['a', 'b'])
         })
     })
 })

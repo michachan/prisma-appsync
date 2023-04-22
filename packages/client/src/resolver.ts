@@ -23,20 +23,22 @@ import { merge } from './utils'
 export function prismaQueryJoin<T>(queries: PrismaArgs[], operators: PrismaOperator[]): T {
     const prismaArgs: PrismaArgs = {}
 
+    // 'where', 'orderBy', 'select', 'skip', 'take', ...
     operators.forEach((operator: PrismaOperator) => {
         queries.forEach((query: PrismaArgs) => {
             if (query?.[operator]) {
                 if (operator === 'where') {
-                    if (prismaArgs[operator]?.AND) {
-                        prismaArgs[operator].AND.push(query[operator])
+                    if (prismaArgs.where?.AND) {
+                        prismaArgs.where.AND.push(query.where)
                     }
-                    else if (prismaArgs[operator]) {
-                        prismaArgs[operator] = {
-                            AND: [prismaArgs[operator], query[operator]],
+                    else if (prismaArgs.where) {
+                        prismaArgs.where = {
+                            ...prismaArgs.where,
+                            AND: [query.where],
                         }
                     }
                     else {
-                        prismaArgs[operator] = query[operator]
+                        prismaArgs.where = query.where
                     }
                 }
                 else if (prismaArgs?.[operator]) {
@@ -51,6 +53,7 @@ export function prismaQueryJoin<T>(queries: PrismaArgs[], operators: PrismaOpera
 
     return prismaArgs as T
 }
+
 export const queryBuilder: QueryBuilder = {
     prismaGet: (...prismaQueries: PrismaArgs[]) => {
         return prismaQueryJoin<PrismaGet>(prismaQueries, ['where', 'select'])
@@ -74,14 +77,7 @@ export const queryBuilder: QueryBuilder = {
         return prismaQueryJoin<PrismaUpdateMany>(prismaQueries, ['data', 'where'])
     },
     prismaUpsert: (...prismaQueries: PrismaArgs[]) => {
-        const prismaArgs = prismaQueryJoin<PrismaUpdate>(prismaQueries, ['data', 'where', 'select'])
-
-        return {
-            update: prismaArgs.data,
-            create: prismaArgs.data,
-            where: prismaArgs.where,
-            ...(prismaArgs.select && { select: prismaArgs.select }),
-        } as PrismaUpsert
+        return prismaQueryJoin<PrismaUpsert>(prismaQueries, ['where', 'create', 'update', 'select'])
     },
     prismaDelete: (...prismaQueries: PrismaArgs[]) => {
         return prismaQueryJoin<PrismaDelete>(prismaQueries, ['where', 'select'])
@@ -102,7 +98,7 @@ export async function getQuery(prismaClient: PrismaClient, query: QueryParams) {
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].findUnique(queryBuilder.prismaGet(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].findUnique(queryBuilder.prismaGet(query.prismaArgs))
 
     return results
 }
@@ -118,7 +114,7 @@ export async function listQuery(prismaClient: PrismaClient, query: QueryParams) 
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].findMany(queryBuilder.prismaList(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].findMany(queryBuilder.prismaList(query.prismaArgs))
 
     return results
 }
@@ -134,7 +130,7 @@ export async function countQuery(prismaClient: PrismaClient, query: QueryParams)
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].count(queryBuilder.prismaCount(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].count(queryBuilder.prismaCount(query.prismaArgs))
 
     return results
 }
@@ -150,7 +146,7 @@ export async function createQuery(prismaClient: PrismaClient, query: QueryParams
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].create(queryBuilder.prismaCreate(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].create(queryBuilder.prismaCreate(query.prismaArgs))
 
     return results
 }
@@ -166,7 +162,7 @@ export async function createManyQuery(prismaClient: PrismaClient, query: QueryPa
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].createMany(queryBuilder.prismaCreateMany(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].createMany(queryBuilder.prismaCreateMany(query.prismaArgs))
 
     return results
 }
@@ -182,7 +178,7 @@ export async function updateQuery(prismaClient: PrismaClient, query: QueryParams
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].update(queryBuilder.prismaUpdate(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].update(queryBuilder.prismaUpdate(query.prismaArgs))
 
     return results
 }
@@ -198,7 +194,7 @@ export async function updateManyQuery(prismaClient: PrismaClient, query: QueryPa
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].updateMany(queryBuilder.prismaUpdateMany(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].updateMany(queryBuilder.prismaUpdateMany(query.prismaArgs))
 
     return results
 }
@@ -214,7 +210,7 @@ export async function upsertQuery(prismaClient: PrismaClient, query: QueryParams
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].upsert(queryBuilder.prismaUpsert(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].upsert(queryBuilder.prismaUpsert(query.prismaArgs))
 
     return results
 }
@@ -230,7 +226,7 @@ export async function deleteQuery(prismaClient: PrismaClient, query: QueryParams
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].delete(queryBuilder.prismaDelete(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].delete(queryBuilder.prismaDelete(query.prismaArgs))
 
     return results
 }
@@ -246,7 +242,7 @@ export async function deleteManyQuery(prismaClient: PrismaClient, query: QueryPa
     if (query.context.model === null)
         return
 
-    const results = await prismaClient[query.context.model].deleteMany(queryBuilder.prismaDeleteMany(query.prismaArgs))
+    const results = await prismaClient[query.context.model.prismaRef].deleteMany(queryBuilder.prismaDeleteMany(query.prismaArgs))
 
     return results
 }

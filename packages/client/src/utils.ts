@@ -1,4 +1,3 @@
-import { set } from 'wild-wild-path'
 import { flatten } from 'wild-wild-utils'
 import { isMatch } from 'micromatch'
 import deepmerge from 'deepmerge'
@@ -65,6 +64,45 @@ export function encode(str: string): string {
  */
 export function dotate(source: any): any {
     return flatten(source, { shallowArrays: true })
+}
+
+/**
+ * #### Transform an object to an array of paths.
+ *
+ * @example objectToPaths({ data: { title: "glut" } })
+ * // returns [ 'data', 'data/title']
+ *
+ * @param {any} source
+ * @returns any
+ */
+export function objectToPaths(source: any): string[] {
+    const dotObject = flatten(source)
+    const dotPaths = Object.keys(dotObject).map((k: string) => {
+        return k
+            .split('.')
+            .filter((part) => {
+                const isDigit = Boolean(/\b(\d+)\b/gi.exec(part))
+                return !isDigit
+            })
+            .join('/')
+    })
+    const paths: string[] = []
+    const seen: Set<string> = new Set()
+
+    for (const dotPath of dotPaths) {
+        const parts = dotPath.split('/')
+        let current = ''
+
+        for (const part of parts) {
+            current += current === '' ? part : `/${part}`
+            if (!seen.has(current)) {
+                paths.push(current)
+                seen.add(current)
+            }
+        }
+    }
+
+    return paths
 }
 
 /**
@@ -190,134 +228,145 @@ export function isObject(element): boolean {
 }
 
 /**
- * #### Traverse any element and execute middleware
+ * #### Walk object tree nodes and return a mutated copy.
  *
- * @example const element = traverse(element, value => doSomething(value))
+ * @example const newObj = await traverseNodes(oldObj, async(node) => {})
  *
- * @param {any} element
- * @param {Function} iteratee
- * @returns any
- */
-export function traverse(
-    element: any,
-    iteratee: (
-        { value, key, path }: { value: any; key?: string; path: any[] }
-    ) => { value: any; excludeChilds?: boolean },
-    parentPath?: any[],
-): any {
-    const path: any = parentPath || []
-
-    let outputData
-
-    // object
-    if (isObject(element)) {
-        outputData = clone(element)
-
-        for (const key in outputData) {
-            if (Object.prototype.hasOwnProperty.call(outputData, key)) {
-                path.push(key)
-                const { excludeChilds, value } = iteratee({ value: outputData[key], key, path })
-
-                // object
-                if (isObject(value)) {
-                    if (excludeChilds)
-                        outputData[key] = clone(value)
-                    else
-                        outputData[key] = traverse(value, iteratee, path)
-                }
-                // array
-                else if (Array.isArray(value)) {
-                    if (excludeChilds)
-                        outputData[key] = [...value]
-                    else
-                        outputData[key] = traverse(value, iteratee, path)
-                }
-                // anything else
-                else {
-                    outputData[key] = value
-                }
-            }
-        }
-    }
-    // array
-    else if (Array.isArray(element)) {
-        const { value } = iteratee({ value: element, path })
-        outputData = [...value]
-        outputData = [...outputData.map((e: any, i: number) => traverse(e, iteratee, [...path, i]))]
-    }
-    // anything else
-    else {
-        path.push(element)
-        const { value } = iteratee({ value: element, path })
-        outputData = value
-    }
-
-    return outputData
-}
-
-/**
- * #### Traverse any element and execute middleware (Async)
- *
- * @example const element = await traverse(element, value => doSomething(value))
- *
- * @param {any} element
- * @param {Function} iteratee
+ * @param {any} node
+ * @param {Function} callback
  * @returns Promise<any>
  */
-export async function traverseAsync(
-    element: any,
-    iteratee: ({ value, key, path }: { value: any; key?: string; path: any[] }) => Promise<{ value: any; excludeChilds?: boolean }>,
-    parentPath?: any[],
+
+export async function traverseNodes(
+    node: any,
+    callback: (node: TraverseNode) => Promise<void>,
+    parentKey?: string | number,
+    key?: string | number,
+    path: (string | number)[] = [],
 ): Promise<any> {
-    const path: any = parentPath || []
+    if (
+        node && Array.isArray(node)
+    ) {
+        let newArray: any[] = [...node]
+        let shouldContinue = true
 
-    let outputData
+        const setFn = (newVal: any) => {
+            newArray = newVal
+        }
 
-    // object
-    if (isObject(element)) {
-        outputData = clone(element)
+        const breakFn = () => {
+            shouldContinue = false
+        }
 
-        for (const key in outputData) {
-            if (Object.prototype.hasOwnProperty.call(outputData, key)) {
-                path.push(key)
-                const { excludeChilds, value } = await iteratee({ value: outputData[key], key, path })
+        const traverseNode: TraverseNode = {
+            parentKey,
+            childKeys: Array.from(Array(newArray.length).keys()),
+            key,
+            value: newArray,
+            type: 'array',
+            path: typeof key !== 'undefined' ? [...path, key] : [...path],
+            set: setFn,
+            break: breakFn,
+        }
 
-                // object
-                if (isObject(value)) {
-                    if (excludeChilds)
-                        outputData[key] = clone(value)
-                    else
-                        outputData[key] = await traverseAsync(value, iteratee, path)
-                }
-                // array
-                else if (Array.isArray(value)) {
-                    if (excludeChilds)
-                        outputData[key] = [...value]
-                    else
-                        outputData[key] = await traverseAsync(value, iteratee, path)
-                }
-                // anything else
-                else {
-                    outputData[key] = value
-                }
+        await callback(traverseNode)
+
+        if (shouldContinue) {
+            for (let childKey = 0; childKey < node.length; childKey++) {
+                const childValue = node[childKey]
+                newArray[childKey] = await traverseNodes(
+                    childValue,
+                    callback,
+                    key,
+                    childKey,
+                    typeof key !== 'undefined' ? [...path, key] : [...path],
+                )
             }
         }
-    }
-    // array
-    else if (Array.isArray(element)) {
-        const { value } = await iteratee({ value: element, path })
-        outputData = [...value]
-        for (let index = 0; index < outputData.length; index++)
-            outputData[index] = await traverseAsync(outputData[index], iteratee, [...path, index])
-    }
-    // anything else
-    else {
-        path.push(element)
-        const { value } = await iteratee({ value: element, path })
-        outputData = value
-    }
 
-    return outputData
+        return newArray
+    }
+    else if (
+        node
+        && typeof node === 'object'
+        && !Array.isArray(node)
+        && typeof node !== 'function'
+        && node !== null
+        && !(node instanceof Date)
+    ) {
+        let newObject: any = { ...node }
+        let shouldContinue = true
+
+        const setFn = (newVal: any) => {
+            newObject = newVal
+        }
+
+        const breakFn = () => {
+            shouldContinue = false
+        }
+
+        const traverseNode: TraverseNode = {
+            parentKey,
+            childKeys: Object.keys(newObject),
+            key,
+            value: newObject,
+            type: 'object',
+            path: typeof key !== 'undefined' ? [...path, key] : [...path],
+            set: setFn,
+            break: breakFn,
+        }
+
+        await callback(traverseNode)
+
+        if (shouldContinue) {
+            for (const [childKey, childValue] of Object.entries(newObject)) {
+                newObject[childKey] = await traverseNodes(
+                    childValue,
+                    callback,
+                    key,
+                    childKey,
+                    typeof key !== 'undefined' ? [...path, key] : [...path],
+                )
+            }
+        }
+
+        return newObject
+    }
+    else {
+        let newValue = node
+
+        const setFn = (newVal: any) => {
+            newValue = newVal
+        }
+
+        const breakFn = () => { }
+
+        const traverseNode: TraverseNode = {
+            parentKey,
+            childKeys: [],
+            key,
+            value: newValue,
+            type: 'value',
+            path: typeof key !== 'undefined' ? [...path, key] : [...path],
+            set: setFn,
+            break: breakFn,
+        }
+
+        await callback(traverseNode)
+
+        return newValue
+    }
+}
+
+interface TraverseNode {
+    parentKey?: string | number
+    childKeys?: (string | number)[]
+    key?: string | number
+    value: any
+    type: 'array' | 'object' | 'value'
+    path: (string | number)[]
+    set: (newValue: any) => void
+    break: () => void
 }
 
 /**
@@ -349,15 +398,13 @@ export function replaceAll(str: string, findArray: string[], replaceArray: strin
 }
 
 /**
- * #### Replace object path content (mutate original object)
+ * #### Return unique array
  *
- * @example replaceObjectPath({ where: { author: { is: 'NULL' } } }, ['where', 'author', 'is'], null)
+ * @example unique(['a', 'b', 'a'])
  *
- * @param {any} obj
- * @param {string[]} path
- * @param {any} replacer
- * @returns any
+ * @param {any[]} array
+ * @returns any[]
  */
-export function replaceObjectPath(obj, path: string[], replacer: any): any {
-    return set(obj, path, replacer, { mutate: true })
+export function unique(array: Iterable<any> | null | undefined): any[] {
+    return [...new Set(array)]
 }

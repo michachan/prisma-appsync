@@ -1,18 +1,14 @@
 import lambdaRateLimiter from 'lambda-rate-limiter'
 import type {
     Context,
-    Options,
     PrismaClient,
     QueryParams,
     Shield,
     ShieldAuthorization,
+    ShieldRule,
 } from './defs'
-import {
-    ActionsList,
-    BatchActionsList,
-    DebugTestingKey,
-} from './defs'
-import { decode, encode, filterXSS, isEmpty, isMatchingGlob, merge, traverse, upperFirst } from './utils'
+import { DebugTestingKey } from './defs'
+import { decode, encode, filterXSS, isEmpty, isMatchingGlob, merge, traverseNodes } from './utils'
 import { CustomError } from './inspector'
 
 // https:// github.com/blackflux/lambda-rate-limiter
@@ -26,17 +22,13 @@ const limiter = lambdaRateLimiter({
  * @param {any} data
  * @returns any
  */
-export function sanitize(data: any): any {
-    return traverse(data, ({ value, key }) => {
-        let excludeChilds = false
+export async function sanitize(data: any): Promise<any> {
+    return await traverseNodes(data, async (node) => {
+        if (typeof node?.key === 'string' && node?.key === DebugTestingKey)
+            node.break()
 
-        if (typeof key === 'string' && key === DebugTestingKey)
-            excludeChilds = true
-
-        if (typeof value === 'string')
-            value = encode(filterXSS(value))
-
-        return { value, excludeChilds }
+        if (typeof node.value === 'string')
+            node.set(encode(filterXSS(node.value)))
     })
 }
 
@@ -46,24 +38,94 @@ export function sanitize(data: any): any {
  * @param {any} data
  * @returns any
  */
-export function clarify(data: any): any {
-    return traverse(data, ({ value, key }) => {
-        let excludeChilds = false
+export async function clarify(data: any): Promise<any> {
+    return await traverseNodes(data, async (node) => {
+        if (typeof node?.key === 'string' && node?.key === DebugTestingKey)
+            node.break()
 
-        if (typeof key === 'string' && key === DebugTestingKey)
-            excludeChilds = true
-
-        if (typeof value === 'string')
-            value = decode(value)
-
-        return { value, excludeChilds }
+        if (typeof node.value === 'string')
+            node.set(decode(node.value))
     })
+}
+
+/**
+ * #### Returns an Shield authorization object for a given field.
+ *
+ * @param {any} options
+ * @param {Shield} options.shield
+ * @param {ShieldRule} options.shieldRule
+ * @param {string} options.globPattern
+ * @param {string} options.matcher
+ * @param {Context} options.context
+ * @returns Promise<ShieldAuthorization>
+ */
+async function getFieldAuthorization(
+    { shield, shieldRule, globPattern, matcher, context }:
+    {
+        shield: Shield
+        shieldRule: ShieldRule
+        globPattern: string
+        matcher: string
+        context: Context
+    },
+): Promise<ShieldAuthorization> {
+    const authorization: ShieldAuthorization = {
+        canAccess: true,
+        reason: String(),
+        prismaFilter: {},
+        matcher: String(),
+        globPattern: String(),
+    }
+
+    if (typeof shieldRule === 'boolean') {
+        authorization.canAccess = shield[matcher] as boolean
+    }
+    else {
+        if (typeof shieldRule.rule === 'undefined')
+            throw new Error('Badly formed shield rule.')
+
+        if (typeof shieldRule.rule === 'boolean') {
+            authorization.canAccess = shieldRule.rule
+        }
+        else if (typeof shieldRule.rule === 'function') {
+            const ruleResult = shieldRule.rule(context)
+
+            if (ruleResult instanceof Promise)
+                authorization.canAccess = await ruleResult
+            else if (typeof ruleResult === 'boolean')
+                authorization.canAccess = ruleResult
+            else
+                throw new Error('Shield rule must return a boolean.')
+        }
+        else {
+            authorization.canAccess = true
+            if (!authorization.prismaFilter)
+                authorization.prismaFilter = {}
+
+            authorization.prismaFilter = merge(authorization.prismaFilter, shieldRule.rule)
+        }
+    }
+
+    authorization.matcher = matcher
+    authorization.globPattern = globPattern
+
+    const isReasonDefined = typeof shieldRule !== 'boolean' && typeof shieldRule.reason !== 'undefined'
+    let reason = `Matcher: ${authorization.matcher}`
+
+    if (isReasonDefined && typeof shieldRule.reason === 'function')
+        reason = shieldRule.reason({ action: context.action, model: context.model?.singular || context.action })
+
+    else if (isReasonDefined && typeof shieldRule.reason === 'string')
+        reason = shieldRule.reason
+
+    authorization.reason = reason
+
+    return authorization
 }
 
 /**
  * #### Returns an authorization object from a Shield configuration passed as input.
  *
- * @param {any} options
  * @param {Shield} options.shield
  * @param {string[]} options.paths
  * @param {Context} options.context
@@ -73,14 +135,12 @@ export async function getShieldAuthorization({
     shield,
     paths,
     context,
-    options,
 }: {
     shield: Shield
     paths: string[]
     context: Context
-    options: Options
 }): Promise<ShieldAuthorization> {
-    const authorization: ShieldAuthorization = {
+    let authorization: ShieldAuthorization = {
         canAccess: true,
         reason: String(),
         prismaFilter: {},
@@ -88,87 +148,36 @@ export async function getShieldAuthorization({
         globPattern: String(),
     }
 
-    const modelSingular = context.model ? upperFirst(context.model!) : String()
-    let modelPlural = modelSingular
+    for (const matcher in shield) {
+        const concurrentFieldsAuthCheck: Promise<any>[] = []
 
-    if (options?.modelsMapping && modelSingular) {
-        const models: any[] = Object.keys(options.modelsMapping)
-        const modelPluralMatch = models.find((key: string) => {
-            return options.modelsMapping[key] === modelSingular.toLowerCase() && key !== upperFirst(modelSingular)
-        })
-        if (modelPluralMatch)
-            modelPlural = modelPluralMatch
-    }
+        const globPattern = matcher
 
-    const reqPaths = paths.map((path: string) => {
-        if (context.model) {
-            BatchActionsList.forEach((batchAction: string) => {
-                path = path.replace(
-                    `${batchAction}/${modelSingular.toLowerCase()}`,
-                    `${batchAction}${upperFirst(modelPlural)}`,
-                )
-            })
-            ActionsList.forEach((action: string) => {
-                path = path.replace(`${action}/${modelSingular.toLowerCase()}`, `${action}${upperFirst(modelSingular)}`)
-            })
-        }
-        return path
-    })
-
-    for (let i = paths.length - 1; i >= 0; i--) {
-        const reqPath: string = reqPaths[i]
-
-        for (const matcher in shield) {
-            let globPattern = matcher
-
-            if (!globPattern.startsWith('/') && globPattern !== '**')
-                globPattern = `/${globPattern}`
+        for (let i = paths.length - 1; i >= 0; i--) {
+            const reqPath: string = paths[i]
 
             if (isMatchingGlob(reqPath, globPattern)) {
                 const shieldRule = shield[matcher]
 
-                if (typeof shieldRule === 'boolean') {
-                    authorization.canAccess = shield[matcher] as boolean
-                }
-                else {
-                    if (typeof shieldRule.rule === 'undefined')
-                        throw new CustomError('Badly formed shield rule.', { type: 'INTERNAL_SERVER_ERROR' })
+                concurrentFieldsAuthCheck.push(
+                    getFieldAuthorization({ shield, shieldRule, globPattern, matcher, context }),
+                )
+            }
+        }
 
-                    if (typeof shieldRule.rule === 'boolean') {
-                        authorization.canAccess = shieldRule.rule
-                    }
-                    else if (typeof shieldRule.rule === 'function') {
-                        const ruleResult = shieldRule.rule(context)
+        const fieldsAuthCheckResults = await Promise.allSettled(concurrentFieldsAuthCheck)
 
-                        if (ruleResult instanceof Promise)
-                            authorization.canAccess = await ruleResult
-                        else if (typeof ruleResult === 'boolean')
-                            authorization.canAccess = ruleResult
-                        else
-                            throw new CustomError('Shield rule must return a boolean.', { type: 'INTERNAL_SERVER_ERROR' })
-                    }
-                    else {
-                        authorization.canAccess = true
-                        if (!authorization.prismaFilter)
-                            authorization.prismaFilter = {}
+        for (let fieldIndex = 0; fieldIndex < fieldsAuthCheckResults.length; fieldIndex++) {
+            const fieldAuthCheckResult = fieldsAuthCheckResults[fieldIndex]
 
-                        authorization.prismaFilter = merge(authorization.prismaFilter, shieldRule.rule)
-                    }
-                }
+            if (fieldAuthCheckResult.status === 'rejected') {
+                throw new CustomError(fieldAuthCheckResult.reason, { type: 'INTERNAL_SERVER_ERROR' })
+            }
+            else {
+                authorization = fieldAuthCheckResult.value
 
-                authorization.matcher = matcher
-                authorization.globPattern = globPattern
-
-                const isReasonDefined = typeof shieldRule !== 'boolean' && typeof shieldRule.reason !== 'undefined'
-                let reason = `Matcher: ${authorization.matcher}`
-
-                if (isReasonDefined && typeof shieldRule.reason === 'function')
-                    reason = shieldRule.reason(context)
-
-                else if (isReasonDefined && typeof shieldRule.reason === 'string')
-                    reason = shieldRule.reason
-
-                authorization.reason = reason
+                if (!fieldAuthCheckResult.value.canAccess)
+                    break
             }
         }
     }
@@ -202,8 +211,8 @@ export function getDepth(
 
     paths.forEach((path: string) => {
         const stopPath = stopPaths.find((p: string) => path.includes(p))
-        const stopLength = stopPath ? stopPath.split('/').length - 1 : undefined
-        const parts = path.split('/').filter(Boolean).slice(2, stopLength ? stopLength + 2 : undefined)
+        const stopIndex = stopPath ? stopPath.split('/').length - 1 : undefined
+        const parts = path.split('/').filter(Boolean).slice(1, stopIndex ? stopIndex + 1 : undefined)
         const pathDepth = parts.length
 
         if (pathDepth > depth)

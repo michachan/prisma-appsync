@@ -154,7 +154,9 @@ export class PrismaAppSync {
         process.env.PRISMA_APPSYNC_LOG_LEVEL = this.options.logLevel
 
         // Debug logs
-        log('New Prisma-AppSync instance created:', this.options)
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { fieldsMapping, ...newInstanceLogs } = this.options
+        log('New Prisma-AppSync instance created:', newInstanceLogs)
 
         // Prisma client options
         const prismaLogDef: Prisma.LogDefinition[] = [
@@ -240,7 +242,7 @@ export class PrismaAppSync {
             })
 
             // Adapter :: parse appsync event
-            let QueryParams = parseEvent(
+            let QueryParams = await parseEvent(
                 resolveParams.event,
                 this.options,
                 resolveParams.resolvers,
@@ -299,7 +301,6 @@ export class PrismaAppSync {
             const shieldAuth: ShieldAuthorization = await getShieldAuthorization({
                 shield,
                 paths: QueryParams.paths,
-                options: this.options,
                 context: QueryParams.context,
             })
             if (Object.keys(shield).length === 0)
@@ -311,7 +312,10 @@ export class PrismaAppSync {
             if (!shieldAuth.canAccess) {
                 const reason = typeof shieldAuth.reason === 'string'
                     ? shieldAuth.reason
-                    : shieldAuth.reason(QueryParams.context)
+                    : shieldAuth.reason({
+                        action: QueryParams.context.action,
+                        model: QueryParams.context.model?.singular || QueryParams.context.action,
+                    })
                 throw new CustomError(reason, { type: 'FORBIDDEN' })
             }
 
@@ -474,7 +478,7 @@ export class PrismaAppSync {
         }
 
         // Guard :: clarify result (decode html)
-        const resultClarified = this.options.sanitize ? clarify(result) : result
+        const resultClarified = this.options.sanitize ? await clarify(result) : result
         log('Returning response to API request w/ result:', resultClarified)
 
         return resultClarified
